@@ -233,7 +233,10 @@ def _compact_header(default_fg: int, default_bg: int, use_paintutils=False, devi
         text_scale = float(profile.get("text_scale", 1.0))
         scale_text = str(int(text_scale)) if text_scale.is_integer() else str(text_scale)
         lines.append(f"t.setTextScale({scale_text})")
-        lines.append("local c,p=colors,paintutils" if use_paintutils else "local c=colors")
+        if use_paintutils:
+            lines.extend(("local c,p=colors,paintutils", "local old=term.redirect(t)"))
+        else:
+            lines.append("local c=colors")
     else:
         globals_list = "term.current(),colors,paintutils" if use_paintutils else "term.current(),colors"
         variables = "t,c,p" if use_paintutils else "t,c"
@@ -341,6 +344,8 @@ def _shape_program(cells, width: int, height: int, default_fg: int, default_bg: 
         lines.append("local s,b=t.setCursorPos,t.blit")
         for x, y, characters, foreground, background in text_commands:
             lines.extend((f"s({x},{y})", f"b({characters},{foreground},{background})"))
+    if rectangles and (device_profile or {}).get("type") == "monitor":
+        lines.append("term.redirect(old)")
     return "\n".join(lines) + "\n", len(rectangles) + len(text_commands)
 
 
@@ -679,6 +684,8 @@ class NewCanvasDialog(tk.Toplevel):
         if device_type in DEVICE_SIZES:
             self.width_var.set(DEVICE_SIZES[device_type][0])
             self.height_var.set(DEVICE_SIZES[device_type][1])
+        elif device_type == "monitor":
+            self._recalculate_monitor_dimensions()
         elif device_type == "custom" and not initial:
             self.width_var.set(self.custom_size[0])
             self.height_var.set(self.custom_size[1])
@@ -694,24 +701,31 @@ class NewCanvasDialog(tk.Toplevel):
     def _set_state(widget, state):
         widget.configure(state=state)
 
+    def _recalculate_monitor_dimensions(self):
+        try:
+            blocks_width = int(self.blocks_width_var.get())
+            blocks_height = int(self.blocks_height_var.get())
+            text_scale = float(self.scale_var.get())
+        except (tk.TclError, ValueError):
+            return False
+        if not (1 <= blocks_width <= 8 and 1 <= blocks_height <= 6):
+            return False
+        if text_scale not in MONITOR_TEXT_SCALES:
+            return False
+        width, height = monitor_terminal_size(blocks_width, blocks_height, text_scale)
+        self._updating_dimensions = True
+        try:
+            self.width_var.set(width)
+            self.height_var.set(height)
+        finally:
+            self._updating_dimensions = False
+        return True
+
     def _values_changed(self, *_args):
         if self._updating_dimensions:
             return
         if self._current_type() == "monitor":
-            try:
-                width, height = monitor_terminal_size(
-                    int(self.blocks_width_var.get()),
-                    int(self.blocks_height_var.get()),
-                    float(self.scale_var.get()),
-                )
-            except (tk.TclError, ValueError):
-                return
-            self._updating_dimensions = True
-            try:
-                self.width_var.set(width)
-                self.height_var.set(height)
-            finally:
-                self._updating_dimensions = False
+            self._recalculate_monitor_dimensions()
         self._refresh_summary()
 
     def _refresh_summary(self):
@@ -738,6 +752,10 @@ class NewCanvasDialog(tk.Toplevel):
             self.monitor_detail_var.set("")
 
     def _accept(self):
+        device_type = self._current_type()
+        if device_type == "monitor" and not self._recalculate_monitor_dimensions():
+            messagebox.showerror(self._tr("error"), self._tr("invalid_size"), parent=self)
+            return
         try:
             width, height = int(self.width_var.get()), int(self.height_var.get())
         except (tk.TclError, ValueError):

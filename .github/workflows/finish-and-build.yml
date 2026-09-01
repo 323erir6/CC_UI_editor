@@ -1,0 +1,258 @@
+name: Finish device support and build Windows executable
+
+on:
+  push:
+    branches:
+      - finish-device-support
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  finish-and-build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Finish screen/device support
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path("cc_terminal_ui_editor.pyw")
+          source = path.read_text(encoding="utf-8")
+
+          replacements = []
+
+          replacements.append((
+              '''        lines.append(f"t.setTextScale({scale_text})")\n        lines.append("local c,p=colors,paintutils" if use_paintutils else "local c=colors")\n''',
+              '''        lines.append(f"t.setTextScale({scale_text})")\n        if use_paintutils:\n            lines.extend(("local c,p=colors,paintutils", "local old=term.redirect(t)"))\n        else:\n            lines.append("local c=colors")\n'''
+          ))
+
+          replacements.append((
+              '''    if text_commands:\n        lines.append("local s,b=t.setCursorPos,t.blit")\n        for x, y, characters, foreground, background in text_commands:\n            lines.extend((f"s({x},{y})", f"b({characters},{foreground},{background})"))\n    return "\\n".join(lines) + "\\n", len(rectangles) + len(text_commands)\n''',
+              '''    if text_commands:\n        lines.append("local s,b=t.setCursorPos,t.blit")\n        for x, y, characters, foreground, background in text_commands:\n            lines.extend((f"s({x},{y})", f"b({characters},{foreground},{background})"))\n    if rectangles and (device_profile or {}).get("type") == "monitor":\n        lines.append("term.redirect(old)")\n    return "\\n".join(lines) + "\\n", len(rectangles) + len(text_commands)\n'''
+          ))
+
+          replacements.append((
+              '''        if device_type in DEVICE_SIZES:\n            self.width_var.set(DEVICE_SIZES[device_type][0])\n            self.height_var.set(DEVICE_SIZES[device_type][1])\n        elif device_type == "custom" and not initial:\n            self.width_var.set(self.custom_size[0])\n            self.height_var.set(self.custom_size[1])\n''',
+              '''        if device_type in DEVICE_SIZES:\n            self.width_var.set(DEVICE_SIZES[device_type][0])\n            self.height_var.set(DEVICE_SIZES[device_type][1])\n        elif device_type == "monitor":\n            self._recalculate_monitor_dimensions()\n        elif device_type == "custom" and not initial:\n            self.width_var.set(self.custom_size[0])\n            self.height_var.set(self.custom_size[1])\n'''
+          ))
+
+          old_values = '''    def _values_changed(self, *_args):\n        if self._updating_dimensions:\n            return\n        if self._current_type() == "monitor":\n            try:\n                width, height = monitor_terminal_size(\n                    int(self.blocks_width_var.get()),\n                    int(self.blocks_height_var.get()),\n                    float(self.scale_var.get()),\n                )\n            except (tk.TclError, ValueError):\n                return\n            self._updating_dimensions = True\n            try:\n                self.width_var.set(width)\n                self.height_var.set(height)\n            finally:\n                self._updating_dimensions = False\n        self._refresh_summary()\n'''
+          new_values = '''    def _recalculate_monitor_dimensions(self):\n        try:\n            blocks_width = int(self.blocks_width_var.get())\n            blocks_height = int(self.blocks_height_var.get())\n            text_scale = float(self.scale_var.get())\n        except (tk.TclError, ValueError):\n            return False\n        if not (1 <= blocks_width <= 8 and 1 <= blocks_height <= 6):\n            return False\n        if text_scale not in MONITOR_TEXT_SCALES:\n            return False\n        width, height = monitor_terminal_size(blocks_width, blocks_height, text_scale)\n        self._updating_dimensions = True\n        try:\n            self.width_var.set(width)\n            self.height_var.set(height)\n        finally:\n            self._updating_dimensions = False\n        return True\n\n    def _values_changed(self, *_args):\n        if self._updating_dimensions:\n            return\n        if self._current_type() == "monitor":\n            self._recalculate_monitor_dimensions()\n        self._refresh_summary()\n'''
+          replacements.append((old_values, new_values))
+
+          replacements.append((
+              '''    def _accept(self):\n        try:\n            width, height = int(self.width_var.get()), int(self.height_var.get())\n''',
+              '''    def _accept(self):\n        device_type = self._current_type()\n        if device_type == "monitor" and not self._recalculate_monitor_dimensions():\n            messagebox.showerror(self._tr("error"), self._tr("invalid_size"), parent=self)\n            return\n        try:\n            width, height = int(self.width_var.get()), int(self.height_var.get())\n'''
+          ))
+
+          for old, new in replacements:
+              if old not in source:
+                  raise RuntimeError("Expected source block was not found; refusing a partial patch")
+              source = source.replace(old, new, 1)
+
+          path.write_text(source, encoding="utf-8")
+
+          readme = '''# CC:Tweaked UI Editor
+
+A visual desktop editor for designing text-mode interfaces for **CC:Tweaked** computers, turtles, pocket computers and external monitors.
+
+The editor lets you draw a UI on a character grid and exports compact Lua that can be pasted directly into a CC:Tweaked computer.
+
+## Features
+
+- Visual CC:Tweaked character-grid editor.
+- Presets for:
+  - Computer terminal: `51 x 19` characters.
+  - Turtle terminal: `39 x 13` characters.
+  - Pocket computer / tablet: `26 x 20` characters.
+  - External monitor with configurable physical width and height in blocks.
+  - Custom terminal dimensions.
+- External monitor text scale from `0.5` to `5.0`.
+- Monitor character dimensions are calculated from the same geometry used by CC:Tweaked.
+- Brush, text, line, rectangle, ellipse, fill, solid-cell, eraser and eyedropper tools.
+- Filled or outlined shapes.
+- Selection tool with copy, cut, paste and delete.
+- Full CC:Tweaked 16-color palette.
+- Separate text and background colors with quick swap.
+- Undo and redo history.
+- Editable live Lua preview.
+- Lua-to-canvas preview for supported terminal and `paintutils` drawing commands.
+- Project save/load using `.ccui.json`.
+- Lua export using compact `term.blit()` rows or `paintutils.drawFilledBox()` where that is smaller.
+- English and Russian application UI.
+
+## Screen types
+
+Choose **New** and select the target screen.
+
+### Computer
+
+Creates a `51 x 19` character canvas and exports code for the current terminal.
+
+### Turtle
+
+Creates a `39 x 13` character canvas for a turtle terminal.
+
+### Pocket computer / tablet
+
+Creates a `26 x 20` character canvas for a pocket computer.
+
+### External monitor
+
+Enter the physical monitor size in Minecraft blocks and choose the CC:Tweaked text scale. The editor automatically calculates the resulting character grid.
+
+The exported Lua finds the first connected monitor with:
+
+```lua
+peripheral.find("monitor")
+```
+
+It then applies the selected text scale before drawing. `paintutils` output is redirected to that monitor as well, so optimized shape exports are drawn on the correct device.
+
+### Custom terminal
+
+Allows any canvas up to the editor limit of `200 x 100` characters.
+
+## Drawing tools
+
+- **Brush** - draw the selected character and colors.
+- **Text** - insert a text string.
+- **Rectangle** - draw filled or outlined rectangles.
+- **Line** - draw straight lines.
+- **Ellipse** - draw filled or outlined ellipses.
+- **Select** - select an area and copy/cut/paste/delete it.
+- **Fill** - flood-fill an area.
+- **Solid cell** - fill a cell with the selected background color using a space character.
+- **Eraser** - restore cells to the canvas background.
+- **Eyedropper** - pick colors/characters from the canvas.
+
+Selection shortcuts:
+
+- `Ctrl+C` - copy.
+- `Ctrl+X` - cut.
+- `Ctrl+V` - paste.
+- `Delete` - delete selection.
+
+## Lua export
+
+The exporter generates two representations and keeps the shorter one:
+
+1. Character rows using `term.blit()`.
+2. Solid background regions using `paintutils.drawFilledBox()` plus `term.blit()` for visible text.
+
+For external monitors the generated program automatically selects the monitor and applies its configured text scale.
+
+Use **Copy Lua** to copy the generated program, or **Export .lua** to save it as a file.
+
+## Live Lua preview
+
+The Lua panel can be edited directly. Supported drawing commands are parsed back into the canvas without executing arbitrary Lua code.
+
+Supported commands include:
+
+- `setBackgroundColor`
+- `setTextColor`
+- `clear`
+- `clearLine`
+- `setCursorPos`
+- `write`
+- `blit`
+- `paintutils.drawPixel`
+- `paintutils.drawLine`
+- `paintutils.drawBox`
+- `paintutils.drawFilledBox`
+
+## Running from source
+
+Requirements:
+
+- Python 3.11 or newer recommended.
+- Tkinter (included with the standard Windows Python installer).
+
+Run:
+
+```powershell
+pythonw cc_terminal_ui_editor.pyw
+```
+
+or:
+
+```powershell
+python cc_terminal_ui_editor.pyw
+```
+
+## Windows executable
+
+A prebuilt Windows executable is stored at:
+
+```text
+dist/CC_Terminal_UI_Editor.exe
+```
+
+No Python installation is required to run the `.exe`.
+
+## Building the executable
+
+Install PyInstaller:
+
+```powershell
+pip install pyinstaller
+```
+
+Then build with the included spec file:
+
+```powershell
+pyinstaller --clean --noconfirm CC_Terminal_UI_Editor.spec
+```
+
+The executable will be written to `dist/CC_Terminal_UI_Editor.exe`.
+
+## Project files
+
+`.ccui.json` files store the canvas, colors and target device profile. External-monitor projects also store the physical block dimensions and selected text scale, so reopening a project restores the same monitor configuration.
+
+## License
+
+No license has been specified for this repository yet.
+'''
+          Path("README.md").write_text(readme, encoding="utf-8")
+
+      - name: Syntax check
+        run: python -m py_compile cc_terminal_ui_editor.pyw
+
+      - name: Install PyInstaller
+        run: python -m pip install --disable-pip-version-check pyinstaller
+
+      - name: Build executable
+        run: pyinstaller --clean --noconfirm CC_Terminal_UI_Editor.spec
+
+      - name: Verify executable
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "dist/CC_Terminal_UI_Editor.exe")) { throw "Executable was not created" }
+          Get-Item "dist/CC_Terminal_UI_Editor.exe" | Format-List Name,Length,LastWriteTime
+
+      - name: Commit finished source, README and executable
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add cc_terminal_ui_editor.pyw README.md dist/CC_Terminal_UI_Editor.exe
+          if git diff --cached --quiet; then
+            echo "Nothing to commit"
+          else
+            git commit -m "Finish device support and build Windows executable [skip ci]"
+            git push origin HEAD:finish-device-support
+          fi

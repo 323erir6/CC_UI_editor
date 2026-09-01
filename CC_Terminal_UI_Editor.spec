@@ -2,10 +2,10 @@
 
 
 a = Analysis(
-    ['cc_terminal_ui_editor.pyw'],
+    ['cc_terminal_ui_editor_fixed.pyw'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[('cc_terminal_ui_editor.pyw', '.')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
